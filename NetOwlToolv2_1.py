@@ -27,6 +27,14 @@ class RDFitem:
         self.orgdoc = orgdoc
         self.type = ontology
 
+    def set_head(self, head=""):
+        """Docstring."""
+        self.head = head
+
+    def set_tail(self, tail=""):
+        """Docstring."""
+        self.tail = tail
+
 
 class RDFitemGeo(RDFitem):
     """Model to hold objs with lat/long already assigned."""
@@ -138,14 +146,17 @@ def netowl_curl(infile, outpath, outextension):
     elif infile.endswith(".docx"):
         headers['Content-Type'] = 'application/msword'
 
-    params = (
-        ('language', 'english'),
-    )
+    # params = (
+    #     ('language', 'english')
+    # )
+
+    params = {"language": "english", "text": "", "mentions": ""}
 
     data = open(infile, 'rb').read()
     response = requests.post('https://api.netowl.com/api/v2/_process',
                              headers=headers, params=params, data=data,
                              verify=False)
+
     r = response.text
     outpath = outpath
     filename = os.path.split(infile)[1]
@@ -179,6 +190,24 @@ def create_dict_for_json(objs, listvalues):
 
     return datadict
 
+
+def get_head(text, headpos, numchars):
+    """Return text before start of entity."""
+    wheretostart = headpos - numchars
+    if wheretostart < 0:
+        wheretostart = 0
+    thehead = text[wheretostart: headpos]
+    return thehead
+
+
+def get_tail(text, tailpos, numchars):
+    """Return text at end of entity."""
+    wheretoend = tailpos + numchars
+    if wheretoend > len(text):
+        wheretoend = len(text)
+    thetail = text[tailpos: wheretoend]
+    return thetail
+
 # ----------------------------------
 #  # vars and setup
 # ----------------------------------
@@ -211,7 +240,15 @@ rdfobjsGeo = []
 linkobjs = []
 eventobjs = []
 orgdocs = []
+
 haslinks = False
+bigstring = ""  # keeps track of what was sent
+numchars = 100  # number of characters to retrieve for head/tail
+newhead = ""  # empty string to catch empty head/tail
+newtail = ""
+
+if numchars > 255:
+    numchars = 254
 
 for j in os.listdir(rdfOutDir):  # go through each file in output dir
 
@@ -223,9 +260,16 @@ for j in os.listdir(rdfOutDir):  # go through each file in output dir
         rdfstring = json.load(f)
         uniquets = str(time.time())  # unique time stamp for each doc
         doc = rdfstring['document'][0]  # gets main part
+
+        if 'text' in doc:
+            v = doc['text'][0]
+            if 'content' in v:
+                bigstring = v['content']
+
         if 'entity' not in doc:
             print("ERROR: Nothing returned from NetOwl, or other unspecified error.")  # NOQA E501
             break
+
         ents = (doc['entity'])  # gets all entities in doc
 
 # ----------------------------------
@@ -292,6 +336,14 @@ for j in os.listdir(rdfOutDir):  # go through each file in output dir
                 else:
                     haslinks = False
 
+            # set up head and tail
+            if 'entity-mention' in e:
+                em = e['entity-mention'][0]
+                if 'head' in em:
+                    newhead = get_head(bigstring, int(em['head']), numchars)
+                if 'tail' in em:
+                    newtail = get_tail(bigstring, int(em['tail']), numchars)
+
             # build the objects
             if isGeo:
 
@@ -347,6 +399,9 @@ for j in os.listdir(rdfOutDir):  # go through each file in output dir
                     rdfobj.set_type("placename")
                     rdfobj.set_subtype("county")
 
+                rdfobj.set_head(newhead)
+                rdfobj.set_tail(newtail)
+
                 rdfobjsGeo.append(rdfobj)
 
             else:  # not geo
@@ -355,6 +410,9 @@ for j in os.listdir(rdfOutDir):  # go through each file in output dir
                     rdfobj = RDFitem(rdfid, rdfvalue, uniquets, fn, ontology, refrels)  # noqa: E501
                 else:  # has neither links nor address
                     rdfobj = RDFitem(rdfid, rdfvalue, uniquets, fn, ontology)
+
+                rdfobj.set_head(newhead)
+                rdfobj.set_tail(newtail)
 
                 rdfobjs.append(rdfobj)
 
@@ -432,9 +490,11 @@ arcpy.management.AddFields(fcname, [["RDFVALUE", "TEXT", "RDFVALUE", 255],  # NO
                                     ["SUBTYPE", 'TEXT', "SUBTYPE", 50],
                                     ["ORGDOC", 'TEXT', "ORGDOC", 255],
                                     ["UNIQUEID", 'TEXT', "UNIQUEID", 50],
-                                    ["LINKDETAILS", 'TEXT', "LINKDETAILS", 255]])  # NOQA
+                                    ["LINKDETAILS", 'TEXT', "LINKDETAILS", 255], # NOQA
+                                    ["HEAD", 'TEXT', "HEAD", 255],
+                                    ["TAIL", 'TEXT', "TAIL", 255]])
 
-entslist = ["RDFVALUE", "RDFLINKS", "TYPE", "SUBTYPE", "ORGDOC", "UNIQUEID", "LINKDETAILS", "SHAPE@XY"]   # noqa: E501
+entslist = ["RDFVALUE", "RDFLINKS", "TYPE", "SUBTYPE", "ORGDOC", "UNIQUEID", "LINKDETAILS", "HEAD", "TAIL", "SHAPE@XY"]   # noqa: E501
 
 iCur = arcpy.da.InsertCursor(fcname, entslist)
 
@@ -455,6 +515,8 @@ for r in rdfobjsGeo:
     fieldobjs.append(r.orgdoc)
     fieldobjs.append(r.id)  # + str(r.timest))
     fieldobjs.append(r.linkdetails)
+    fieldobjs.append(r.head)
+    fieldobjs.append(r.tail)
     fieldobjs.append((r.long, r.lat))
 
     iCur.insertRow(fieldobjs)
@@ -478,9 +540,11 @@ arcpy.management.AddFields(nongeotablename, [["RDFVALUE", "TEXT", "RDFVALUE", 25
                                 ["RDFLINKS", 'TEXT', "RDFLINKS", 255],  # NOQA
                                 ["ORGDOC", 'TEXT', "ORGDOC", 255],
                                 ["UNIQUEID", 'TEXT', "UNIQUEID", 50],
-                                ['TYPE', 'TEXT', 'TYPE', 50],])  # NOQA
+                                ['TYPE', 'TEXT', 'TYPE', 50],
+                                ["HEAD", 'TEXT', "HEAD", 255],
+                                ["TAIL", 'TEXT', "TAIL", 255]])
 
-listvalues = ["RDFVALUE", "RDFLINKS", "ORGDOC", "UNIQUEID", "TYPE"]  # noqa: E501
+listvalues = ["RDFVALUE", "RDFLINKS", "ORGDOC", "UNIQUEID", "TYPE", "HEAD", "TAIL"]  # noqa: E501
 
 iCur_links = arcpy.da.InsertCursor(nongeotablename, listvalues)  # noqa: E501
 
@@ -498,6 +562,8 @@ for d in rdfobjs:  # used for tables in ArcGIS Pro
     fieldobjs.append(d.orgdoc)
     fieldobjs.append(d.id)
     fieldobjs.append(d.type)
+    fieldobjs.append(d.head)
+    fieldobjs.append(d.tail)
     iCur_links.insertRow(fieldobjs)
 
     # tups = nof.create_dict_for_json(fieldobjs, listvalues)
